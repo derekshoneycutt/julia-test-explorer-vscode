@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { DiscoveredTest } from './discovery';
+import { RunnableTest } from './discovery';
 import { HelperManager } from './helperManager';
 import { normalizeOutput, runProcess } from './process';
 
@@ -46,7 +46,7 @@ export async function runTests(
   controller: vscode.TestController,
   request: vscode.TestRunRequest,
   token: vscode.CancellationToken,
-  metadata: ReadonlyMap<string, DiscoveredTest>,
+  metadata: ReadonlyMap<string, RunnableTest>,
   helper: HelperManager,
   storageUri: vscode.Uri,
 ): Promise<void> {
@@ -57,17 +57,22 @@ export async function runTests(
 
     const groups = new Map<string, typeof tests>();
     for (const selectedTest of tests) {
-      const group = groups.get(selectedTest.test.project_path) ?? [];
+      const key = JSON.stringify([
+        selectedTest.test.project_path,
+        selectedTest.test.workingDirectory,
+        selectedTest.test.executionPath,
+      ]);
+      const group = groups.get(key) ?? [];
       group.push(selectedTest);
-      groups.set(selectedTest.test.project_path, group);
+      groups.set(key, group);
     }
-    for (const [projectPath, projectTests] of groups) {
+    for (const projectTests of groups.values()) {
       if (token.isCancellationRequested) {
         break;
       }
       projectTests.forEach(({ item }) => run.started(item));
       try {
-        await runProject(run, token, projectPath, projectTests, helper, storageUri);
+        await runExecution(run, token, projectTests, helper, storageUri);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         projectTests.forEach(({ item }) => run.errored(item, new vscode.TestMessage(message)));
@@ -104,9 +109,9 @@ export function parseTestReport(text: string): TestReport {
 function collectRequestedTests(
   controller: vscode.TestController,
   request: vscode.TestRunRequest,
-  metadata: ReadonlyMap<string, DiscoveredTest>,
-): Array<{ item: vscode.TestItem; test: DiscoveredTest }> {
-  const selected: Array<{ item: vscode.TestItem; test: DiscoveredTest }> = [];
+  metadata: ReadonlyMap<string, RunnableTest>,
+): Array<{ item: vscode.TestItem; test: RunnableTest }> {
+  const selected: Array<{ item: vscode.TestItem; test: RunnableTest }> = [];
   const excluded = new Set(request.exclude?.map((item) => item.id));
 
   /**
@@ -132,25 +137,29 @@ function collectRequestedTests(
 }
 
 /**
- * Runs selected files in one Julia environment and maps their structured results.
+ * Runs one suite entrypoint or direct file and maps its structured results.
  * @param run Active VS Code run.
  * @param token Cancellation token.
- * @param projectPath Workspace or Julia environment directory.
- * @param tests Selected tests associated with the environment.
+ * @param tests Selected tests associated with the execution target.
  * @param helper Helper that resolves Julia and the bundled runner.
  * @param storageUri Extension storage location.
  * @returns A promise completed after result publication.
  */
-async function runProject(
+async function runExecution(
   run: vscode.TestRun,
   token: vscode.CancellationToken,
-  projectPath: string,
-  tests: Array<{ item: vscode.TestItem; test: DiscoveredTest }>,
+  tests: Array<{ item: vscode.TestItem; test: RunnableTest }>,
   helper: HelperManager,
   storageUri: vscode.Uri,
 ): Promise<void> {
+  const execution = tests[0].test;
+  const projectPath = execution.project_path;
   await fs.mkdir(storageUri.fsPath, { recursive: true });
-  const reportName = `${createHash('sha256').update(projectPath).digest('hex')}.json`;
+  const reportName = `${createHash('sha256').update(JSON.stringify([
+    projectPath,
+    execution.workingDirectory,
+    execution.executionPath,
+  ])).digest('hex')}.json`;
   const reportPath = path.join(storageUri.fsPath, reportName);
   await fs.rm(reportPath, { force: true });
 
@@ -163,7 +172,9 @@ async function runProject(
     ...extraArguments,
     helper.getRunnerPath(),
     projectPath,
+    execution.workingDirectory,
     reportPath,
+    execution.executionPath,
     ...filePaths,
   ];
   const result = await runProcess(helper.getJuliaPath(), args, token, (text) => {
@@ -178,16 +189,8 @@ async function runProject(
 
   try {
     const report = parseTestReport(await fs.readFile(reportPath, 'utf8'));
-    const results = new Map<string, ReportTest[]>();
-    for (const test of report.tests) {
-      const key = reportKey(test.file_path, test.test_path);
-      const matches = results.get(key) ?? [];
-      matches.push(test);
-      results.set(key, matches);
-    }
-
     for (const { item, test } of tests) {
-      const matches = results.get(reportKey(test.file_path, test.test_path)) ?? [];
+      const matches = report.tests.filter((result) => matchesReportTest(test, result));
       const testResult = worstResult(matches);
       if (!testResult) {
         const message = report.error || result.stderr.trim() || 'Julia did not execute this test set';
@@ -211,6 +214,21 @@ async function runProject(
 }
 
 /**
+ * Checks whether a runtime result represents a statically discovered test.
+ * @param discovered Statically discovered test metadata.
+ * @param runtime Runtime result emitted through the suite entrypoint.
+ * @returns Whether source identity and the local test path match.
+ */
+export function matchesReportTest(discovered: RunnableTest, runtime: ReportTest): boolean {
+  if (path.resolve(discovered.file_path) !== path.resolve(runtime.file_path)
+    || runtime.test_path.length < discovered.test_path.length) {
+    return false;
+  }
+  const offset = runtime.test_path.length - discovered.test_path.length;
+  return discovered.test_path.every((part, index) => runtime.test_path[offset + index] === part);
+}
+
+/**
  * Selects the most severe result when a generated test-set path repeats in one file.
  * @param results Matching runtime results.
  * @returns Highest-severity result (`errored`, then `failed`), or the first result.
@@ -219,16 +237,6 @@ function worstResult(results: readonly ReportTest[]): ReportTest | undefined {
   return results.find((result) => result.status === 'errored')
     ?? results.find((result) => result.status === 'failed')
     ?? results[0];
-}
-
-/**
- * Creates the shared discovery/runtime result identity.
- * @param filePath Absolute test source path.
- * @param testPath Nested test-set names.
- * @returns Stable result key.
- */
-function reportKey(filePath: string, testPath: readonly string[]): string {
-  return JSON.stringify([path.resolve(filePath), testPath]);
 }
 
 /**

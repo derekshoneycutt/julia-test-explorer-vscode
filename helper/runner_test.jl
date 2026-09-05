@@ -24,7 +24,7 @@ include("runner.jl")
       """)
     report_path = joinpath(directory, "report.json")
 
-    @test run_files(directory, [suite_path], report_path) == 0
+    @test run_entrypoint(directory, directory, suite_path, [suite_path], report_path) == 0
     report = read(report_path, String)
     @test contains(report, "\"test_path\":[\"passing\"]")
     @test contains(report, "\"test_path\":[\"passing\",\"nested\"]")
@@ -32,6 +32,32 @@ include("runner.jl")
     @test contains(report, "\"test_path\":[\"failing\"]")
     @test contains(report, "\"status\":\"failed\"")
     @test contains(report, replace(suite_path, "\\" => "\\\\"))
+  end
+
+  mktempdir() do directory
+    test_directory = joinpath(directory, "test")
+    mkpath(test_directory)
+    leaf_path = joinpath(test_directory, "arithmetic.jl")
+    write(leaf_path, """
+      @testset "dependent" begin
+        @test shared_value == 42
+      end
+      """)
+    entrypoint_path = joinpath(test_directory, "runtests.jl")
+    write(entrypoint_path, """
+      using Test
+      shared_value = 42
+      @testset "package" begin
+        include("arithmetic.jl")
+      end
+      """)
+    report_path = joinpath(directory, "report.json")
+
+    @test run_entrypoint(directory, directory, entrypoint_path, [leaf_path], report_path) == 0
+    report = read(report_path, String)
+    @test contains(report, "\"test_path\":[\"package\",\"dependent\"]")
+    @test contains(report, "\"status\":\"passed\"")
+    @test contains(report, replace(leaf_path, "\\" => "\\\\"))
   end
 end
 

@@ -1,13 +1,13 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { createTestId, DiscoveredTest, findDiscoveryTargets } from './discovery';
+import { createTestId, findDiscoveryTargets, resolveRunnableTests, RunnableTest } from './discovery';
 import { HelperManager } from './helperManager';
 import { runTests } from './runner';
 
 /** Owns Julia test discovery, the VS Code test tree, and the run profile. */
 export class JuliaTestController implements vscode.Disposable {
   private readonly controller = vscode.tests.createTestController('juliaTestExplorer', 'Julia Tests');
-  private readonly metadata = new Map<string, DiscoveredTest>();
+  private readonly metadata = new Map<string, RunnableTest>();
   private refreshTimer: NodeJS.Timeout | undefined;
   private refreshPromise: Promise<void> | undefined;
 
@@ -92,7 +92,7 @@ export class JuliaTestController implements vscode.Disposable {
     const targets = await findDiscoveryTargets();
     this.output.appendLine(`Discovering Julia tests in ${targets.length} workspace target(s).`);
     const roots: vscode.TestItem[] = [];
-    const nextMetadata = new Map<string, DiscoveredTest>();
+    const nextMetadata = new Map<string, RunnableTest>();
 
     for (const target of targets) {
       try {
@@ -101,7 +101,10 @@ export class JuliaTestController implements vscode.Disposable {
           `Discovered ${response.tests.length} test set(s) in ${target.filePaths.length} Julia file(s) under ${target.projectPath}.`,
         );
         if (response.tests.length > 0) {
-          roots.push(this.createProjectItem(target.projectPath, response.tests, nextMetadata));
+          const tests = resolveRunnableTests(target.projectPath, target.filePaths, response.tests);
+          const suitePaths = new Set(tests.flatMap((test) => test.suite ? [test.suite.entrypointPath] : []));
+          this.output.appendLine(`Resolved ${suitePaths.size} conventional test suite(s) under ${target.projectPath}.`);
+          roots.push(this.createProjectItem(target.projectPath, tests, nextMetadata));
         }
       } catch (error) {
         this.output.appendLine(`Discovery failed for ${target.projectPath}: ${String(error)}`);
@@ -123,43 +126,60 @@ export class JuliaTestController implements vscode.Disposable {
    */
   private createProjectItem(
     projectDirectory: string,
-    tests: readonly DiscoveredTest[],
-    metadata: Map<string, DiscoveredTest>,
+    tests: readonly RunnableTest[],
+    metadata: Map<string, RunnableTest>,
   ): vscode.TestItem {
     const projectItem = this.controller.createTestItem(
       createTestId('project', projectDirectory),
       path.basename(projectDirectory),
       vscode.Uri.file(projectDirectory),
     );
-    const files = new Map<string, DiscoveredTest[]>();
+    const groups = new Map<string, { label: string; tests: RunnableTest[] }>();
     for (const test of tests) {
-      const fileTests = files.get(test.file_path) ?? [];
-      fileTests.push(test);
-      files.set(test.file_path, fileTests);
+      const key = test.suite?.id ?? 'direct';
+      const group = groups.get(key) ?? {
+        label: test.suite?.name ?? 'Direct files',
+        tests: [],
+      };
+      group.tests.push(test);
+      groups.set(key, group);
     }
 
-    for (const [filePath, fileTests] of files) {
-      const fileItem = this.controller.createTestItem(
-        createTestId('file', filePath),
-        path.basename(filePath),
-        vscode.Uri.file(filePath),
+    for (const [groupId, group] of groups) {
+      const groupItem = this.controller.createTestItem(
+        groupId === 'direct' ? createTestId('suite', projectDirectory, groupId) : groupId,
+        group.label,
       );
-      for (const test of fileTests) {
-        const testItem = this.controller.createTestItem(
-          createTestId('test', test.file_path, String(test.start.line), ...test.test_path),
-          test.test_path.join(' > '),
-          vscode.Uri.file(test.file_path),
-        );
-        testItem.range = new vscode.Range(
-          test.start.line - 1,
-          test.start.column - 1,
-          test.end.line - 1,
-          test.end.column - 1,
-        );
-        metadata.set(testItem.id, test);
-        fileItem.children.add(testItem);
+      const files = new Map<string, RunnableTest[]>();
+      for (const test of group.tests) {
+        const fileTests = files.get(test.file_path) ?? [];
+        fileTests.push(test);
+        files.set(test.file_path, fileTests);
       }
-      projectItem.children.add(fileItem);
+      for (const [filePath, fileTests] of files) {
+        const fileItem = this.controller.createTestItem(
+          createTestId('file', filePath),
+          path.basename(filePath),
+          vscode.Uri.file(filePath),
+        );
+        for (const test of fileTests) {
+          const testItem = this.controller.createTestItem(
+            createTestId('test', test.file_path, String(test.start.line), ...test.test_path),
+            test.test_path.join(' > '),
+            vscode.Uri.file(test.file_path),
+          );
+          testItem.range = new vscode.Range(
+            test.start.line - 1,
+            test.start.column - 1,
+            test.end.line - 1,
+            test.end.column - 1,
+          );
+          metadata.set(testItem.id, test);
+          fileItem.children.add(testItem);
+        }
+        groupItem.children.add(fileItem);
+      }
+      projectItem.children.add(groupItem);
     }
     return projectItem;
   }

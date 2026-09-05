@@ -5,7 +5,8 @@ Julia Test Explorer discovers named Julia `@testset` blocks and integrates them 
 ## Features
 
 - Discovers statically named `Test.@testset` and `@testset` blocks in Julia files anywhere in the workspace.
-- Organizes discovered test sets by project and source file.
+- Organizes discovered test sets by project, test suite, and source file.
+- Detects multiple conventional `test/runtests.jl` suites in one workspace.
 - Runs individual test sets, files, projects, or every discovered test set.
 - Reports queued, running, passed, failed, and errored states.
 - Streams Julia output into VS Code's Test Results output.
@@ -40,7 +41,9 @@ code --uninstall-extension derekshoneycutt.julia-test-explorer
 3. Open VS Code's Testing view.
 4. Run a test set, source file, project, or all tests using the standard test controls.
 
-Selecting a test navigates to its `@testset` declaration. Running an item executes its source file in the nearest Julia project environment, or the workspace environment when no `Project.toml` exists.
+Selecting a test navigates to its `@testset` declaration. Tests beneath a directory containing `test/runtests.jl` execute through their nearest containing suite entrypoint, preserving the suite's setup, modules, and include order. A workspace can contain multiple independent suites, including suites in nested repositories or submodules.
+
+Selecting one test still executes its complete owning suite because ordinary Julia `@testset` blocks are reporting boundaries rather than isolated entrypoints. Only the selected Test Explorer items receive published states. Tests outside a conventional suite continue to execute directly in the nearest Julia project environment, or the workspace environment when no `Project.toml` exists.
 
 ## Extension Settings
 
@@ -74,7 +77,8 @@ Press `F5` to compile the extension and open an Extension Development Host.
 
 - Discovery includes statically named `@testset` blocks in any non-excluded Julia file.
 - Dynamically generated test-set names and standalone `@test` expressions are not shown as explorer items.
-- A selected item executes its source file; only selected items receive published states.
+- Tests under the nearest conventional `test/runtests.jl` execute as part of that suite; unowned tests execute from their source file.
+- A selected test may execute unselected peers in its suite, but only selected items receive published states.
 - Test-only dependencies must be available from the project environment.
 - Discovery and execution use saved files only.
 - Debugging, coverage, and continuous test runs are not currently supported.

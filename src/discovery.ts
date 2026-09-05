@@ -30,6 +30,23 @@ export interface DiscoveryTarget {
   readonly filePaths: readonly string[];
 }
 
+/** A Julia test suite executed through one conventional entrypoint. */
+export interface TestSuite {
+  readonly id: string;
+  readonly name: string;
+  readonly rootPath: string;
+  readonly entrypointPath: string;
+  readonly projectPath: string;
+  readonly workingDirectory: string;
+}
+
+/** A discovered test paired with its execution boundary. */
+export interface RunnableTest extends DiscoveredTest {
+  readonly suite: TestSuite | undefined;
+  readonly executionPath: string;
+  readonly workingDirectory: string;
+}
+
 /**
  * Validates and parses a discovery-helper response.
  * @param text Helper stdout.
@@ -65,6 +82,47 @@ export async function findDiscoveryTargets(): Promise<DiscoveryTarget[]> {
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([projectPath, filePaths]) => ({ projectPath, filePaths: filePaths.sort() }));
+}
+
+/**
+ * Resolves conventional suites and assigns each test to its nearest containing suite.
+ * @param projectPath Julia environment associated with the discovered files.
+ * @param filePaths Julia files considered during discovery.
+ * @param tests Statically discovered tests in the environment.
+ * @returns Tests enriched with suite-aware execution metadata.
+ */
+export function resolveRunnableTests(
+  projectPath: string,
+  filePaths: readonly string[],
+  tests: readonly DiscoveredTest[],
+): RunnableTest[] {
+  const suites = filePaths
+    .filter((filePath) => path.basename(filePath) === 'runtests.jl'
+      && path.basename(path.dirname(filePath)) === 'test')
+    .map((entrypointPath): TestSuite => {
+      const normalizedEntrypoint = path.resolve(entrypointPath);
+      const rootPath = path.dirname(normalizedEntrypoint);
+      return {
+        id: createTestId('suite', normalizedEntrypoint),
+        name: path.relative(projectPath, rootPath) || path.basename(rootPath),
+        rootPath,
+        entrypointPath: normalizedEntrypoint,
+        projectPath: path.resolve(projectPath),
+        workingDirectory: path.resolve(projectPath),
+      };
+    })
+    .sort((left, right) => right.rootPath.length - left.rootPath.length);
+
+  return tests.map((test) => {
+    const filePath = path.resolve(test.file_path);
+    const suite = suites.find((candidate) => isWithin(filePath, candidate.rootPath));
+    return {
+      ...test,
+      suite,
+      executionPath: suite?.entrypointPath ?? filePath,
+      workingDirectory: suite?.workingDirectory ?? path.resolve(projectPath),
+    };
+  });
 }
 
 /**
@@ -105,7 +163,7 @@ function isWithin(candidate: string, parent: string): boolean {
  * @param parts Identity components encoded to prevent delimiter collisions.
  * @returns Stable item identifier.
  */
-export function createTestId(kind: 'project' | 'file' | 'test', ...parts: string[]): string {
+export function createTestId(kind: 'project' | 'suite' | 'file' | 'test', ...parts: string[]): string {
   return `${kind}:${parts.map(encodeURIComponent).join(':')}`;
 }
 

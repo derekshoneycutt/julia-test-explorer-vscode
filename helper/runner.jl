@@ -123,29 +123,29 @@ function report_json(testset::ExplorerTestSet)::String
 end
 
 """
-  run_files(project_path, file_paths, report_path)::Int
+  run_entrypoint(project_path, working_directory, execution_path, active_file_paths, report_path)::Int
 
-Execute each source file inside `project_path` with `ExplorerTestSet` active,
-then write a versioned JSON report to `report_path`. Top-level load errors are
-captured in the report so the helper can still return a readable result.
+Execute one suite entrypoint inside `working_directory` with `ExplorerTestSet`
+active, then write a versioned JSON report to `report_path`. `active_file_paths`
+identifies selected source files for runtime attribution. Top-level load errors
+are captured in the report so the helper can still return a readable result.
 """
-function run_files(
-  project_path::AbstractString,
-  file_paths::AbstractVector{<:AbstractString},
+function run_entrypoint(
+  _project_path::AbstractString,
+  working_directory::AbstractString,
+  execution_path::AbstractString,
+  active_file_paths::AbstractVector{<:AbstractString},
   report_path::AbstractString,
 )::Int
-  absolute_project = abspath(project_path)
   empty!(active_test_files)
-  union!(active_test_files, abspath.(file_paths))
+  union!(active_test_files, abspath.(active_file_paths))
   empty!(completed_testsets)
   root_error = ""
 
   try
-    cd(absolute_project) do
+    cd(abspath(working_directory)) do
       @testset ExplorerTestSet "$ROOT_TESTSET" begin
-        for file_path in file_paths
-          Base.include(Main, abspath(file_path))
-        end
+        Base.include(Main, abspath(execution_path))
       end
     end
   catch error
@@ -163,12 +163,13 @@ end
 """
   main(arguments::Vector{String})::Int
 
-Run `<project-path> <report-path> <file.jl>...`. Return two when any required
-argument is missing; otherwise return the result of `run_files`.
+Run `<project-path> <working-directory> <report-path> <execution-path>
+<active-file.jl>...`. Return two when any required argument is missing;
+otherwise return the result of `run_entrypoint`.
 """
 function main(arguments::Vector{String})::Int
-  length(arguments) >= 3 || return 2
-  return run_files(arguments[1], arguments[3:end], arguments[2])
+  length(arguments) >= 5 || return 2
+  return run_entrypoint(arguments[1], arguments[2], arguments[4], arguments[5:end], arguments[3])
 end
 
 if abspath(PROGRAM_FILE) == (@__FILE__) && (@__MODULE__) === Main
