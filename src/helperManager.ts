@@ -20,7 +20,7 @@ export class HelperManager {
    * @returns Discovered tests and protocol metadata.
    */
   public async discover(projectPath: string, filePaths: readonly string[]): Promise<DiscoveryResponse> {
-    const result = await runProcess(this.getJuliaPath(), [
+    const result = await runProcess(this.getJuliaPath(projectPath), [
       '--startup-file=no',
       `--project=${projectPath}`,
       this.getHelperPath('discovery.jl'),
@@ -37,9 +37,12 @@ export class HelperManager {
     * Resolves the Julia executable from extension settings and local installations.
     * @returns Julia executable command or absolute path.
    */
-  public getJuliaPath(): string {
-    const configuredPath = vscode.workspace.getConfiguration('juliaTestExplorer').get<string>('juliaPath', 'julia');
-    const juliaExtensionPath = vscode.workspace.getConfiguration('julia').get<string>('executablePath', '');
+  public getJuliaPath(resourcePath?: string): string {
+    const resource = resourcePath ? vscode.Uri.file(resourcePath) : undefined;
+    const configuredPath = vscode.workspace.getConfiguration(
+      'juliaTestExplorer', resource).get<string>('juliaPath', 'julia');
+    const juliaExtensionPath = vscode.workspace.getConfiguration(
+      'julia', resource).get<string>('executablePath', '');
     return resolveJuliaPath(configuredPath, juliaExtensionPath, process.env.PATH, homedir());
   }
 

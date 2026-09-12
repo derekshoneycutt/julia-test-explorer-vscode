@@ -51,6 +51,7 @@ Selecting one test still executes its complete owning suite because ordinary Jul
 | --- | --- | --- |
 | `juliaTestExplorer.juliaPath` | `julia` | Julia command or absolute executable path. |
 | `juliaTestExplorer.testArguments` | `[]` | Additional Julia arguments passed before the runner script. |
+| `juliaTestExplorer.testSuites` | `[]` | Entrypoints with explicit project and working-directory ownership. |
 | `juliaTestExplorer.exclude` | `**/{.git,node_modules,out,dist}/**` | Glob excluded from Julia file discovery. |
 
 Example:
@@ -61,6 +62,29 @@ Example:
   "juliaTestExplorer.testArguments": ["--check-bounds=yes"]
 }
 ```
+
+### Explicit Test Suites
+
+By default, a test uses its nearest `Project.toml`, and a conventional
+`test/runtests.jl` owns test sets beneath its directory. Configure a suite when
+an entrypoint uses another Julia project or requires a specific working directory:
+
+```json
+{
+  "juliaTestExplorer.testSuites": [
+    {
+      "name": "Tooling",
+      "entrypoint": "tools/test/runtests.jl",
+      "project": "tools/analysis",
+      "cwd": "."
+    }
+  ]
+}
+```
+
+Suite paths resolve from the containing workspace folder. A configured suite owns
+Julia files beneath its entrypoint directory and overrides nearest-project inference.
+Settings and test execution remain isolated between folders in a multi-root workspace.
 
 ## Development
 

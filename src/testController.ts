@@ -37,11 +37,18 @@ export class JuliaTestController implements vscode.Disposable {
       true,
     );
 
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.jl');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{jl,toml}');
     watcher.onDidCreate(() => this.scheduleRefresh());
     watcher.onDidChange(() => this.scheduleRefresh());
     watcher.onDidDelete(() => this.scheduleRefresh());
-    context.subscriptions.push(watcher);
+    const configurationWatcher = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('juliaTestExplorer')) {
+        this.scheduleRefresh();
+      }
+    });
+    const workspaceWatcher = vscode.workspace.onDidChangeWorkspaceFolders(
+      () => this.scheduleRefresh());
+    context.subscriptions.push(watcher, configurationWatcher, workspaceWatcher);
     void this.refresh();
   }
 
@@ -101,7 +108,8 @@ export class JuliaTestController implements vscode.Disposable {
           `Discovered ${response.tests.length} test set(s) in ${target.filePaths.length} Julia file(s) under ${target.projectPath}.`,
         );
         if (response.tests.length > 0) {
-          const tests = resolveRunnableTests(target.projectPath, target.filePaths, response.tests);
+          const tests = resolveRunnableTests(
+            target.projectPath, target.filePaths, response.tests, target.suites);
           const suitePaths = new Set(tests.flatMap((test) => test.suite ? [test.suite.entrypointPath] : []));
           this.output.appendLine(`Resolved ${suitePaths.size} conventional test suite(s) under ${target.projectPath}.`);
           roots.push(this.createProjectItem(target.projectPath, tests, nextMetadata));

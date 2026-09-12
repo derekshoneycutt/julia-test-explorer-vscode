@@ -1,5 +1,12 @@
 import * as assert from 'node:assert';
-import { createTestId, DiscoveredTest, findDiscoveryTargets, parseDiscoveryResponse, resolveRunnableTests } from '../discovery';
+import {
+  createTestId,
+  DiscoveredTest,
+  findDiscoveryTargets,
+  parseDiscoveryResponse,
+  resolveConfiguredSuites,
+  resolveRunnableTests,
+} from '../discovery';
 import { resolveJuliaPath } from '../helperManager';
 import { normalizeOutput } from '../process';
 import { matchesReportTest, parseTestReport, ReportTest } from '../runner';
@@ -97,6 +104,49 @@ suite('Julia Test Explorer', () => {
     assert.strictEqual(runnable[2].suite?.name, 'tools/analysis/test');
     assert.strictEqual(runnable[3].suite, undefined);
     assert.strictEqual(runnable[3].executionPath, '/workspace/sample/standalone.jl');
+  });
+
+  /** Verifies a repository tooling suite can use a sibling Julia project. */
+  test('resolves configured suite project and working directory', () => {
+    const [suite] = resolveConfiguredSuites('/workspace/euclid', [{
+      name: 'Tooling',
+      entrypoint: 'tools/test/runtests.jl',
+      project: 'tools/analysis',
+      cwd: '.',
+    }]);
+    const [test] = resolveRunnableTests('/workspace/euclid/tools/analysis', [
+      '/workspace/euclid/tools/test/runtests.jl',
+    ], [{
+      project_path: '/workspace/euclid/tools/analysis',
+      name: 'tooling',
+      test_path: ['Euclid tooling'],
+      file_path: '/workspace/euclid/tools/test/runtests.jl',
+      start: { line: 19, column: 1 },
+      end: { line: 19, column: 15 },
+    }], [suite]);
+
+    assert.strictEqual(test.suite?.name, 'Tooling');
+    assert.strictEqual(test.project_path, '/workspace/euclid/tools/analysis');
+    assert.strictEqual(test.executionPath, '/workspace/euclid/tools/test/runtests.jl');
+    assert.strictEqual(test.workingDirectory, '/workspace/euclid');
+  });
+
+  /** Verifies identical relative suite settings remain workspace-local. */
+  test('isolates configured suites between workspace folders', () => {
+    const [euclid] = resolveConfiguredSuites('/workspace/euclid', [{
+      name: 'Application',
+      entrypoint: 'src/julia/test/runtests.jl',
+      project: 'src/julia',
+    }]);
+    const [other] = resolveConfiguredSuites('/workspace/other', [{
+      name: 'Application',
+      entrypoint: 'src/julia/test/runtests.jl',
+      project: 'src/julia',
+    }]);
+
+    assert.strictEqual(euclid.projectPath, '/workspace/euclid/src/julia');
+    assert.strictEqual(other.projectPath, '/workspace/other/src/julia');
+    assert.notStrictEqual(euclid.id, other.id);
   });
 
   /** Verifies outer suite test sets do not change a discovered test's identity. */

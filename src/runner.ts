@@ -163,7 +163,8 @@ async function runExecution(
   const reportPath = path.join(storageUri.fsPath, reportName);
   await fs.rm(reportPath, { force: true });
 
-  const configuration = vscode.workspace.getConfiguration('juliaTestExplorer');
+  const configuration = vscode.workspace.getConfiguration(
+    'juliaTestExplorer', vscode.Uri.file(execution.executionPath));
   const extraArguments = configuration.get<string[]>('testArguments', []);
   const filePaths = [...new Set(tests.map(({ test }) => test.file_path))];
   const args = [
@@ -177,7 +178,13 @@ async function runExecution(
     execution.executionPath,
     ...filePaths,
   ];
-  const result = await runProcess(helper.getJuliaPath(), args, token, (text) => {
+  const juliaPath = helper.getJuliaPath(projectPath);
+  run.appendOutput(normalizeOutput(`[julia] project: ${projectPath}\n`));
+  run.appendOutput(normalizeOutput(`[julia] cwd: ${execution.workingDirectory}\n`));
+  run.appendOutput(normalizeOutput(`[julia] entrypoint: ${execution.executionPath}\n`));
+  run.appendOutput(normalizeOutput(
+    `[julia] command: ${[juliaPath, ...args].map(formatArgument).join(' ')}\n`));
+  const result = await runProcess(juliaPath, args, token, (text) => {
     run.appendOutput(normalizeOutput(text));
   });
 
@@ -211,6 +218,11 @@ async function runExecution(
   } finally {
     await fs.rm(reportPath, { force: true });
   }
+}
+
+/** Formats one command argument for display without changing process execution. */
+function formatArgument(argument: string): string {
+  return /\s/u.test(argument) ? JSON.stringify(argument) : argument;
 }
 
 /**

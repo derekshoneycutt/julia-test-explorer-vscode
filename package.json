@@ -26,6 +26,7 @@
         "juliaTestExplorer.juliaPath": {
           "type": "string",
           "default": "julia",
+          "scope": "resource",
           "description": "Path to the Julia executable. When left as julia, Julia Test Explorer also checks the Julia extension setting and standard Juliaup locations."
         },
         "juliaTestExplorer.testArguments": {
@@ -34,11 +35,42 @@
             "type": "string"
           },
           "default": [],
+          "scope": "resource",
           "description": "Additional Julia arguments passed before the test runner script."
+        },
+        "juliaTestExplorer.testSuites": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "description": "Julia test entrypoints with explicit project and working-directory ownership.",
+          "items": {
+            "type": "object",
+            "required": ["name", "entrypoint", "project"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name for the suite."
+              },
+              "entrypoint": {
+                "type": "string",
+                "description": "Suite entrypoint. Relative paths resolve from the workspace folder."
+              },
+              "project": {
+                "type": "string",
+                "description": "Julia project used with --project. Relative paths resolve from the workspace folder."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Suite working directory. Defaults to project and resolves from the workspace folder."
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "juliaTestExplorer.exclude": {
           "type": "string",
           "default": "**/{.git,node_modules,out,dist}/**",
+          "scope": "resource",
           "description": "Glob pattern excluded from Julia test discovery."
         }
       }

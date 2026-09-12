@@ -28,6 +28,15 @@ export interface DiscoveryResponse {
 export interface DiscoveryTarget {
   readonly projectPath: string;
   readonly filePaths: readonly string[];
+  readonly suites: readonly TestSuite[];
+}
+
+/** User-defined Julia test suite with explicit execution ownership. */
+export interface TestSuiteConfiguration {
+  readonly name: string;
+  readonly entrypoint: string;
+  readonly project: string;
+  readonly cwd?: string;
 }
 
 /** A Julia test suite executed through one conventional entrypoint. */
@@ -38,6 +47,27 @@ export interface TestSuite {
   readonly entrypointPath: string;
   readonly projectPath: string;
   readonly workingDirectory: string;
+}
+
+/** Resolves configured suite paths relative to their containing workspace. */
+export function resolveConfiguredSuites(
+  workspacePath: string,
+  configurations: readonly TestSuiteConfiguration[],
+): TestSuite[] {
+  return configurations.map((configuration) => {
+    if (!configuration.name || !configuration.entrypoint || !configuration.project) {
+      throw new Error('Each juliaTestExplorer.testSuites entry requires name, entrypoint, and project');
+    }
+    const entrypointPath = resolveWorkspacePath(workspacePath, configuration.entrypoint);
+    return {
+      id: createTestId('suite', entrypointPath),
+      name: configuration.name,
+      rootPath: path.dirname(entrypointPath),
+      entrypointPath,
+      projectPath: resolveWorkspacePath(workspacePath, configuration.project),
+      workingDirectory: resolveWorkspacePath(workspacePath, configuration.cwd ?? configuration.project),
+    };
+  });
 }
 
 /** A discovered test paired with its execution boundary. */
@@ -65,23 +95,44 @@ export function parseDiscoveryResponse(text: string): DiscoveryResponse {
  * @returns Discovery targets with explicit source paths.
  */
 export async function findDiscoveryTargets(): Promise<DiscoveryTarget[]> {
-  const configuration = vscode.workspace.getConfiguration('juliaTestExplorer');
-  const exclude = configuration.get<string>('exclude', '**/{.git,node_modules,out,dist}/**');
-  const files = await vscode.workspace.findFiles('**/*.jl', exclude);
-  const groups = new Map<string, string[]>();
-  for (const file of files) {
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(file);
-    if (!workspaceFolder) {
-      continue;
+  const groups = new Map<string, { filePaths: string[]; suites: TestSuite[] }>();
+  for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
+    const configuration = vscode.workspace.getConfiguration(
+      'juliaTestExplorer', workspaceFolder.uri);
+    const exclude = configuration.get<string>(
+      'exclude', '**/{.git,node_modules,out,dist}/**');
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(workspaceFolder, '**/*.jl'), exclude);
+    const suites = resolveConfiguredSuites(
+      workspaceFolder.uri.fsPath,
+      configuration.get<TestSuiteConfiguration[]>('testSuites', []),
+    );
+    for (const file of files) {
+      if (vscode.workspace.getWorkspaceFolder(file)?.uri.fsPath !== workspaceFolder.uri.fsPath) {
+        continue;
+      }
+      const configuredSuite = suites
+        .filter((suite) => isWithin(file.fsPath, suite.rootPath))
+        .sort((left, right) => right.rootPath.length - left.rootPath.length)[0];
+      const projectPath = configuredSuite?.projectPath
+        ?? await findNearestProjectPath(file.fsPath, workspaceFolder.uri.fsPath);
+      const group = groups.get(projectPath) ?? { filePaths: [], suites: [] };
+      group.filePaths.push(file.fsPath);
+      for (const suite of suites.filter((candidate) => candidate.projectPath === projectPath)) {
+        if (!group.suites.some((candidate) => candidate.id === suite.id)) {
+          group.suites.push(suite);
+        }
+      }
+      groups.set(projectPath, group);
     }
-    const projectPath = await findNearestProjectPath(file.fsPath, workspaceFolder.uri.fsPath);
-    const projectFiles = groups.get(projectPath) ?? [];
-    projectFiles.push(file.fsPath);
-    groups.set(projectPath, projectFiles);
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([projectPath, filePaths]) => ({ projectPath, filePaths: filePaths.sort() }));
+    .map(([projectPath, group]) => ({
+      projectPath,
+      filePaths: group.filePaths.sort(),
+      suites: group.suites,
+    }));
 }
 
 /**
@@ -95,10 +146,14 @@ export function resolveRunnableTests(
   projectPath: string,
   filePaths: readonly string[],
   tests: readonly DiscoveredTest[],
+  configuredSuites: readonly TestSuite[] = [],
 ): RunnableTest[] {
-  const suites = filePaths
+  const conventionalSuites = filePaths
     .filter((filePath) => path.basename(filePath) === 'runtests.jl'
       && path.basename(path.dirname(filePath)) === 'test')
+    .filter((entrypointPath) => !configuredSuites.some((suite) => (
+      path.resolve(suite.entrypointPath) === path.resolve(entrypointPath)
+    )))
     .map((entrypointPath): TestSuite => {
       const normalizedEntrypoint = path.resolve(entrypointPath);
       const rootPath = path.dirname(normalizedEntrypoint);
@@ -112,6 +167,8 @@ export function resolveRunnableTests(
       };
     })
     .sort((left, right) => right.rootPath.length - left.rootPath.length);
+  const suites = [...configuredSuites, ...conventionalSuites]
+    .sort((left, right) => right.rootPath.length - left.rootPath.length);
 
   return tests.map((test) => {
     const filePath = path.resolve(test.file_path);
@@ -123,6 +180,13 @@ export function resolveRunnableTests(
       workingDirectory: suite?.workingDirectory ?? path.resolve(projectPath),
     };
   });
+}
+
+/** Resolves an absolute or workspace-relative configured path. */
+function resolveWorkspacePath(workspacePath: string, configuredPath: string): string {
+  return path.isAbsolute(configuredPath)
+    ? path.normalize(configuredPath)
+    : path.resolve(workspacePath, configuredPath);
 }
 
 /**
